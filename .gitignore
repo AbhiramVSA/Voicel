@@ -1,0 +1,34 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environment
+.venv/
+env/
+venv/
+
+# dotenv environment variables
+.env
+
+# uv internal metadata (just in case)
+.uv/
+
+# Python project metadata
+*.egg-info/
+dist/
+build/
+
+# pyenv
+.python-version
+
+# VSCode settings
+.vscode/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
