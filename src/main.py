@@ -22,7 +22,7 @@ settings = Settings()
 WHISPER_URL = "http://guest1.indominuslabs.in/transcribe-batch"
 SANITIZE_URL = "http://guest1.indominuslabs.in/sanitize"
 
-TIMEOUT_CONFIG = httpx.Timeout(300.0, connect=60.0)
+TIMEOUT_CONFIG = httpx.Timeout(1000, connect=60.0)
 
 file_count = 0
 
@@ -408,23 +408,6 @@ if report_for_chat:
     st.session_state["reports"],
     st.session_state["original_filenames"]
 )
-    # 1) Capture the user’s question in `user_question`
-    user_question = st.chat_input("Ask something about the report…")
-
-    # 2) Only call the agent when there *is* a new question
-    if user_question:
-        # Echo the user’s message in the chat UI
-        with st.chat_message("user"):
-            st.markdown(user_question)
-
-        # Run the agent on that exact input
-        with st.chat_message("assistant"), st.spinner("Thinking…"):
-            response = asyncio.run(
-                qa_agent.run(user_question, model_settings={"temperature": 0.2})
-            )
-            # `response.output` holds the assistant’s answer
-            st.markdown(response.output)
-
 
     # Initialize chat history specifically for the current report context
     # Use a key related to the report to reset history when the report changes
