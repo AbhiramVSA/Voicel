@@ -421,6 +421,7 @@ if report_for_chat:
             st.markdown(message["content"])
 
     # Chat input
+
     if prompt := st.chat_input("Ask something about the report..."):
         st.session_state[chat_history_key].append({"role": "user", "content": prompt})
         with st.chat_message("user"):
