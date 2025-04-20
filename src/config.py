@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
+from pydantic import Field
 import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -11,10 +12,7 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str 
     WHISPER_URL: str  
     SANITIZE_URL: str 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-    
-    
-    #If you have validation errors, uncomment the line below and comment the 'Config' Class:
-    # model_config = SettingsConfigDict(env_file=os.path.join(os.path.dirname(__file__), "..", ".env")) 
+    # class Config:
+    #     env_file = ".env"
+    #     env_file_encoding = "utf-8"
+    model_config = SettingsConfigDict(env_file=os.path.join(os.path.dirname(__file__), "..", ".env")) 
