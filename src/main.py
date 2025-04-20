@@ -15,7 +15,7 @@ import tempfile
 import base64
 from io import BytesIO
 from typing import List, Tuple, Optional
-
+ 
 
 settings = Settings()
 
@@ -24,15 +24,19 @@ SANITIZE_URL = "http://guest1.indominuslabs.in/sanitize"
 
 TIMEOUT_CONFIG = httpx.Timeout(300.0, connect=60.0)
 
+file_count = 0
 
 # Send multiple audio files to FastAPI server for transcription.
 async def transcribe_multiple_audio(files_data: List[bytes]) -> List[str]:
+    
+    global file_count
+    file_count = len(files_data)
 
     files = [
         ("files", (f"audio_{i}.wav", file_bytes, "audio/wav"))
         for i, file_bytes in enumerate(files_data)
     ]
-
+    
     if not files:
         return []
 
@@ -144,7 +148,7 @@ async def process_multiple_audio(files_data: List[bytes]) -> Tuple[List[str], Li
     return transcripts, sanitized_list, reports_list
 
 async def process_audio(file: bytes):
-    transcript_result = await transcribe_multiple_audio(file)
+    transcript_result = await transcribe_multiple_audio([file])
     # Check if transcription returned an error string
     if isinstance(transcript_result, str) and transcript_result.startswith("Error:"):
         return transcript_result, "Error: Could not sanitize due to transcription failure."
@@ -232,20 +236,41 @@ def display_pdf(pdf_bytes):
     pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="700" height="800" type="application/pdf"></iframe>'
     st.markdown(pdf_display, unsafe_allow_html=True)
 
-def create_qa_agent(report_data: str):
-    """Creates a chatbot for answering questions based on the report."""
-    model = GroqModel(
-        'llama-3.3-70b-versatile', provider=GroqProvider(api_key=settings.GROQ_API_KEY)
-    )
-    qa_agent = Agent(
-        model,
-        system_prompt=f"""
-        You are a helpful assistant answering questions based on the structured report.
-        Report: {report_data}
-        """
-    )
-    return qa_agent
+def create_qa_agent(
+    reports: list[str],
+    filenames: list[str],
+    model_name: str = 'llama-3.3-70b-versatile',
+    api_key: str = settings.GROQ_API_KEY
+) -> Agent[str]:
+    """
+    Returns an Agent that knows about N reports and can
+    select which one to answer questions on.
+    """
+    # 1) Build the combined system prompt
+    if len(reports) == 1:
+        prompt = (
+            "You are a helpful assistant. There is 1 report.\n\n"
+            f"Report 1 - {filenames[0]}:\n{reports[0]}\n\n"
+            "Answer ONLY from this report. If you don't know, say so."
+        )
+    else:
+        indexed = [
+            f"Report {i+1} - {filenames[i]}:\n{reports[i]}"
+            for i in range(len(reports))
+        ]
+        prompt = "\n\n".join([
+            f"You are a helpful assistant for customer support reports.",
+            f"There are {len(reports)} reports available:",
+            *[f"- Report {i+1} - {filenames[i]}" for i in range(len(reports))],
+            "When asked, choose the right report by number or keyword. If unclear, ask the user to clarify.",
+            "Here are all reports:\n\n" + "\n\n---\n\n".join(indexed)
+        ])
 
+    # 2) Create the Agent with a single system_prompt
+    return Agent(
+        GroqModel(model_name, provider=GroqProvider(api_key=api_key)),
+        system_prompt=prompt
+    )
 st.title("📄 Customer Support Report Generator")
 
 
@@ -379,7 +404,27 @@ elif "single_report" in st.session_state:
 if report_for_chat:
     st.header("💬 Chat with Your Report")
 
-    qa_agent = create_qa_agent(report_for_chat) # Your existing function
+    qa_agent = create_qa_agent(
+    st.session_state["reports"],
+    st.session_state["original_filenames"]
+)
+    # 1) Capture the user’s question in `user_question`
+    user_question = st.chat_input("Ask something about the report…")
+
+    # 2) Only call the agent when there *is* a new question
+    if user_question:
+        # Echo the user’s message in the chat UI
+        with st.chat_message("user"):
+            st.markdown(user_question)
+
+        # Run the agent on that exact input
+        with st.chat_message("assistant"), st.spinner("Thinking…"):
+            response = asyncio.run(
+                qa_agent.run(user_question, model_settings={"temperature": 0.2})
+            )
+            # `response.output` holds the assistant’s answer
+            st.markdown(response.output)
+
 
     # Initialize chat history specifically for the current report context
     # Use a key related to the report to reset history when the report changes
