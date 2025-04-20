@@ -24,13 +24,11 @@ SANITIZE_URL = "http://guest1.indominuslabs.in/sanitize"
 
 TIMEOUT_CONFIG = httpx.Timeout(1000, connect=60.0)
 
-file_count = 0
 
 # Send multiple audio files to FastAPI server for transcription.
 async def transcribe_multiple_audio(files_data: List[bytes]) -> List[str]:
     
-    global file_count
-    file_count = len(files_data)
+
 
     files = [
         ("files", (f"audio_{i}.wav", file_bytes, "audio/wav"))
