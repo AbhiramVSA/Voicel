@@ -1,10 +1,12 @@
 import os
-import torch
+import torch, logfire, config
+from config import Settings
 import tempfile, shutil
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from starlette.responses import JSONResponse
+from pydantic import BaseModel, Field
 from typing import List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from transformers import (
@@ -12,10 +14,16 @@ from transformers import (
     pipeline, AutoTokenizer, AutoModelForCausalLM
 )
 
+
 # ---------- ENV & CONFIG ---------- #
-os.environ['HF_HOME'] = '/home/guest/lv02/hf_cache'
+os.environ['HF_HOME'] = '/home/guest/lv02/hf_cache' #configured cache for A100 GPU to store the models
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
-torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32 #might need to change depending if GH200 works on f16
+
+settings = Settings()
+
+# -------------LOGFIRE SETUP------------ #
+logfire.configure(token=settings.LOGFIRE_KEY)
 
 # ---------- FASTAPI SETUP ---------- #
 app = FastAPI()
@@ -23,6 +31,21 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
+
+#Validating whether file type and size match the requirements
+ALLOWED_EXTS = {".wav", ".mp3", ".m4a", ".flac"}
+MAX_FILE_SIZE = 200 * 1024 * 1024  # 50 MB
+
+def validate_file(file: UploadFile):
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ALLOWED_EXTS:
+        raise HTTPException(status_code=415, detail=f"Unsupported file type: {ext}")
+    file.file.seek(0, os.SEEK_END)
+    size = file.file.tell()
+    file.file.seek(0)
+    if size > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail=f"File too large: {size} bytes")
+    return ext
 
 # ---------- WHISPER SETUP ---------- #
 whisper_model_id = "openai/whisper-large-v3"
@@ -40,44 +63,81 @@ whisper_pipe = pipeline(
     device=device
 )
 
-def transcribe_file(path: str) -> str:
-    try:
-        result = whisper_pipe(path, return_timestamps=True)
-        return result["text"]
-    except Exception as e:
-        return f"Error: {str(e)}"
+#Validate if GPU is being used
+print("CUDA available:", torch.cuda.is_available())
+print("Whisper model on device:", next(whisper_model.parameters()).device)
 
+
+#Transcription pipeline which allows for 5 workers.
+def transcribe_file(path: str,
+                    chunk_length_s: float = 30.0,
+                    stride_length_s: float = 5.0,
+                    language: str = None,
+                    task: str = "transcribe") -> dict:
+    """
+    Returns a dict with keys:
+      - text (str)
+    """
+    pipe_kwargs = {
+        "chunk_length_s": chunk_length_s,
+        "stride_length_s": stride_length_s,
+        "task": task
+    }
+    if language:
+        pipe_kwargs["language"] = language
+
+    result = whisper_pipe(path, **pipe_kwargs)
+    return result
+
+
+
+
+#Transcribe batch end-point, need to add more parameters and validation
 @app.post("/transcribe-batch")
 async def transcribe_batch(files: List[UploadFile] = File(...)):
     temp_paths = []
+    responses = []
     try:
+        # 1. Validate & save
         for file in files:
-            suffix = os.path.splitext(file.filename)[-1]
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            ext = validate_file(file)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
                 shutil.copyfileobj(file.file, tmp)
                 temp_paths.append(tmp.name)
 
-        transcriptions = [""] * len(temp_paths)
+        # 2. Transcribe in parallel
         with ThreadPoolExecutor(max_workers=5) as executor:
             future_to_idx = {
-                executor.submit(transcribe_file, path): i
+                executor.submit(
+                    transcribe_file,
+                    path,
+                    chunk_length_s=30.0,
+                    stride_length_s=5.0,
+                    language="en",      # e.g. enforce English
+                    task="transcribe"
+                ): i
                 for i, path in enumerate(temp_paths)
             }
 
+            # prepare placeholder
+            responses = [None] * len(temp_paths)
             for future in as_completed(future_to_idx):
                 idx = future_to_idx[future]
                 try:
-                    transcriptions[idx] = future.result()
+                    res = future.result()
+                    responses[idx] = {"success": True, **res}
+                except HTTPException as he:
+                    responses[idx] = {"success": False, "error": he.detail}
                 except Exception as e:
-                    transcriptions[idx] = f"Error: {str(e)}"
+                    responses[idx] = {"success": False, "error": str(e)}
 
-        return JSONResponse(content={"transcriptions": transcriptions})
+        # 3. Return structured JSON
+        return JSONResponse(content={"results": responses})
     finally:
+        # cleanup
         for path in temp_paths:
-            try:
-                os.remove(path)
-            except Exception:
-                pass
+            try: os.remove(path)
+            except: pass
 
 # ---------- QWEN SANITIZER SETUP ---------- #
 qwen_model_id = "Qwen/Qwen2.5-3B-Instruct"
@@ -89,30 +149,108 @@ qwen_model = AutoModelForCausalLM.from_pretrained(
     trust_remote_code=True
 )
 
+# ---------- Pydantic Schemas ----------
 class TranscriptInput(BaseModel):
-    transcript: str
+    transcript: str = Field(..., min_length=1)
+    redact_cc: bool = Field(True, description="Redact credit card numbers")
+    redact_ssn: bool = Field(True, description="Redact SSNs")
+    max_new_tokens: int = Field(512, ge=1, le=2048, description="Maximum tokens to generate")
 
-@app.post("/sanitize")
-async def sanitize(input: TranscriptInput):
-    prompt = "You are a data privacy assistant.\n\nYour task is to sanitize transcripts. Apply the following redactions:\n\n1. For credit card numbers: Show the first 6 and last 4 digits. Replace the middle digits with X. Example: 123456XXXXXX1234.\n2. For Social Security Numbers (SSNs): Replace all but the last 4 digits with X. Example: XXX-XX-1234.\n\nKeep the rest of the transcript unchanged. Return only the sanitized text, no extra explanations."
+# ---------- Sanitization Logic ----------
+def sanitize_text(
+    text: str,
+    redact_cc: bool = True,
+    redact_ssn: bool = True,
+    max_new_tokens: int = 512
+) -> str:
+    """
+    Uses qwen_model to sanitize `text` according to the flags.
+    Returns the sanitized string.
+    """
+    # 1. Build dynamic prompt
+    prompt = '''You are a Data Privacy Assistant specialized in sanitizing text transcripts. Follow these rules precisely:
+
+1. **Primary Redactions**  
+   a. **Credit Card Numbers**  
+      - Detect any sequence of digits that likely represents a credit/debit card number (13–19 digits, optionally separated by spaces or hyphens).  
+      - Preserve the first six and last four digits. Replace all intervening digits with uppercase “X”.  
+      - Maintain any original separators in their positions.  
+      - Example:  
+        - “My card 1234-5678-9012-3456” → “123456XXXXXX3456”  
+        - “Card: 4111 1111 1111 1111” → “411111XXXXXX1111”  
+
+   b. **Social Security Numbers (US SSNs)**  
+      - Detect 9‑digit SSNs, with or without hyphens.  
+      - Replace the first five digits with uppercase “X”, preserving hyphens.  
+      - Example:  
+        - “123-45-6789” → “XXX-XX-6789”  
+
+2. **Formatting and Output**  
+   - Return **only** the sanitized transcript—no additional commentary, notes, or JSON wrappers.  
+   - Preserve all original punctuation, capitalization, and spacing, except where digits are replaced.  
+   - Do **not** modify names, dates, addresses, phone numbers, or other PII unless explicitly listed above.  
+
+3. **Error Handling and Guardrails**  
+   - If you are uncertain whether a number is a credit card or SSN, leave it unchanged.  
+   - Do **not** attempt to redact other types of sensitive data (e.g., phone numbers, email addresses) unless instructed.  
+   - Do **not** hallucinate or invent any redactions. Only replace sequences that clearly match the patterns above.  
+   - If the transcript contains no redaction targets, return it verbatim.  
+
+4. **Examples**  
+   - Input: “Contact me at 4111 1111 1111 1111 or SSN 123-45-6789.”  
+     Output: “Contact me at 411111XXXXXX1111 or SSN XXX-XX-6789.”  
+
+Begin sanitizing now.
+'''
+
+    # 2. Tokenize with chat template
     messages = [
         {"role": "system", "content": prompt},
-        {"role": "user", "content": input.transcript}
+        {"role": "user", "content": text}
     ]
-    formatted_prompt = tokenizer.apply_chat_template(
+    formatted = tokenizer.apply_chat_template(
         messages,
         tokenize=False,
         add_generation_prompt=True
     )
-    model_inputs = tokenizer([formatted_prompt], return_tensors="pt").to(qwen_model.device)
-    generated_ids = qwen_model.generate(**model_inputs, max_new_tokens=512)
-    generated_ids = [
-        output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs["input_ids"], generated_ids)
-    ]
-    response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
-    return {"sanitized": response}
+    inputs = tokenizer([formatted], return_tensors="pt").to(qwen_model.device)
+
+    # 3. Generate and strip prompt tokens
+    gen_ids = qwen_model.generate(**inputs, max_new_tokens=max_new_tokens)
+    trimmed = gen_ids[0][ inputs["input_ids"].shape[1] : ]
+    sanitized = tokenizer.decode(trimmed, skip_special_tokens=True)
+
+    return sanitized
+
+# ---------- SANITIZE ENDPOINT ----------
+@app.post("/sanitize")
+async def sanitize_endpoint(payload: TranscriptInput):
+    """
+    Sanitizes a single transcript according to user flags.
+    """
+    try:
+        output = sanitize_text(
+            text=payload.transcript,
+            redact_cc=payload.redact_cc,
+            redact_ssn=payload.redact_ssn,
+            max_new_tokens=payload.max_new_tokens
+        )
+        return {"success": True, "sanitized": output}
+
+    except ValueError as ve:
+        # Parameter validation errors
+        raise HTTPException(status_code=400, detail=str(ve))
+
+    except Exception as e:
+        # Unexpected failures
+        logfire.error("Sanitization failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Sanitization failed")
 
 # ---------- HEALTH CHECK ---------- #
 @app.get("/ping")
 async def ping():
     return {"message": "Combined server is up"}
+
+#might need to add more diagnostic endpoints
+
+
