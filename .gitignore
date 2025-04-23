@@ -11,7 +11,7 @@ env/
 venv/
 
 # dotenv environment variables
-.env
+.env.example
 
 # uv internal metadata (just in case)
 .uv/
