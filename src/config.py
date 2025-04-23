@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str 
     WHISPER_URL: str  
     SANITIZE_URL: str 
+    LOGFIRE_KEY : str
     # class Config:
     #     env_file = ".env"
     #     env_file_encoding = "utf-8"
