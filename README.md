@@ -41,13 +41,19 @@ uv run --with groq streamlit run src/main.py
 
 The FastAPI service defines `/transcribe-batch`, `/sanitize`, and `/ping` in `server/server.py`. It loads Whisper large-v3 and Qwen2.5-3B when the module starts. It uses CUDA when available and otherwise selects CPU.
 
-The project manifest does not list all imports used by the API service, including `logfire`, `transformers`, and `uvicorn`. The command below supplies those packages for this run. The service can download large model files at startup.
+The project manifest does not list all API imports, including `logfire`, `transformers`, `uvicorn`, `accelerate`, and `python-multipart`. The command below supplies those packages for this run. The service can download large model files at startup.
 
-After you install those packages, start the API from the repository root:
+Start the API from the repository root. The command supplies the missing packages for this run:
 
 ```bash
-PYTHONPATH=src uv run --with logfire --with transformers --with uvicorn uvicorn server.server:app --reload --host 127.0.0.1 --port 8000
+PYTHONPATH=src uv run --with logfire --with transformers --with uvicorn --with accelerate --with python-multipart uvicorn server.server:app --reload --host 127.0.0.1 --port 8000
 ```
+
+The API source sets `HF_HOME` to `/home/guest/lv02/hf_cache`. This cache path is specific to one host.
+
+## API contract
+
+`src/main.py` expects the transcription endpoint to return `{"transcriptions": [...]}`. The tracked `server/server.py` endpoint returns `{"results": [...]}`. The client and server response shapes do not match.
 
 ## Source files
 
