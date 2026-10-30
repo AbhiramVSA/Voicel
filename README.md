@@ -1,6 +1,10 @@
-# Voicel
+<p align="center">
+  <img src="assets/voicel-mark.png" alt="Voicel audio-to-report mark" width="200" />
+</p>
 
-Voicel is a prototype for customer-support audio processing. The Streamlit app in `src/main.py` sends audio to a transcription API, requests text sanitization, creates a report, and exports the report as PDF. The FastAPI service is in `server/server.py`.
+<h1 align="center">Voicel</h1>
+
+<p align="center">Voicel is a prototype for customer-support audio processing. The Streamlit app in <code class="notranslate">src/main.py</code> sends audio to a transcription API, requests text sanitization, creates a report, and exports the report as PDF. The FastAPI service is in <code class="notranslate">server/server.py</code>.</p>
 
 The sanitizer prompt targets U.S. Social Security numbers and payment card numbers. It does not target other personal data.
 
